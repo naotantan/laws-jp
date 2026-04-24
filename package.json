@@ -1,0 +1,48 @@
+{
+  "name": "laws-jp",
+  "version": "0.1.0",
+  "description": "Command-line tool and library for the Japanese government e-Gov Laws API. Fetch full statute text, look up specific articles, search 9,500+ statutes, and watch for amendments — all from the canonical government source.",
+  "license": "MIT",
+  "author": "Naoto Kudo <naoloop@gmail.com>",
+  "homepage": "https://github.com/naotantan/laws-jp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/naotantan/laws-jp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/naotantan/laws-jp/issues"
+  },
+  "keywords": [
+    "egov",
+    "laws",
+    "japan",
+    "statutes",
+    "legal",
+    "api",
+    "cli",
+    "japanese-law",
+    "e-gov",
+    "法令",
+    "法律",
+    "電子政府"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "lib/egov-api.js",
+  "bin": {
+    "laws-jp": "bin/laws-jp.js"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "examples/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test 'test/**/*.test.js'",
+    "lint": "node --check bin/laws-jp.js && node --check lib/egov-api.js && node --check lib/cache.js && node --check lib/toc.js && node --check lib/seed.js && node --check lib/article-diff.js"
+  },
+  "dependencies": {}
+}
