@@ -347,6 +347,116 @@ SLACK_WEBHOOK_URL=https://hooks.slack.com/services/... ./examples/daily-cron.sh
 
 ---
 
+## Integrations
+
+### Obsidian
+
+Because `laws-jp fetch` writes Markdown to stdout, syncing into an Obsidian vault is just a redirect. The bundled [`examples/sync-to-obsidian.sh`](examples/sync-to-obsidian.sh) walks your watchlist and writes one `.md` file per statute, with YAML frontmatter so Obsidian's Tag pane and Dataview can index them.
+
+**Setup (paste once):**
+
+```bash
+VAULT="$HOME/Documents/MyVault" FOLDER="laws" \
+  ~/.local/src/laws-jp/examples/sync-to-obsidian.sh
+```
+
+Each run produces files like `MyVault/laws/民法.md`:
+
+```markdown
+---
+title: 民法
+law_id: 129AC0000000089
+law_num: 明治二十九年法律第八十九号
+law_revision_id: 129AC0000000089_20260401_506AC0000000033
+amendment_enforcement_date: 2026-04-01
+tags: [laws-jp, "民事", "弁護士", "司法書士"]
+source: e-Gov
+synced_at: 2026-04-25T01:00:00Z
+---
+
+# 民法
+
+> 明治二十九年法律第八十九号
+…
+```
+
+The script is **idempotent** — files whose `law_revision_id` already matches the current revision are skipped, so you can run it as often as you like. Pair with `laws-jp check-all` in cron and your vault stays current automatically:
+
+```cron
+0 6 * * *  laws-jp check-all && VAULT=$HOME/Documents/MyVault FOLDER=laws ~/.local/src/laws-jp/examples/sync-to-obsidian.sh
+```
+
+**Quick lookup workflow** — for ad-hoc article inserts during note-taking:
+
+```bash
+laws-jp article 民法 415 | pbcopy        # macOS — paste into any Obsidian note
+laws-jp article 民法 415 | xclip -sel c  # Linux
+```
+
+**Dataview query** to list all amended statutes since a date:
+
+```dataview
+TABLE law_num, amendment_enforcement_date AS "Last amended"
+FROM "laws"
+WHERE date(amendment_enforcement_date) >= date("2026-01-01")
+SORT amendment_enforcement_date DESC
+```
+
+### Notion
+
+The Notion API takes JSON page payloads, so the bundled [`examples/sync-to-notion.sh`](examples/sync-to-notion.sh) walks your watchlist and creates/updates one **database page** per statute, with the body rendered as paragraph blocks.
+
+**One-time Notion setup:**
+
+1. Visit https://www.notion.so/profile/integrations and create an internal integration. Copy the secret (it begins with `ntn_` or `secret_`).
+2. Create a database in Notion with these properties (any name; the script expects these exact property names):
+
+   | Property | Type |
+   |----------|------|
+   | `Title` | Title |
+   | `law_id` | Text |
+   | `law_num` | Text |
+   | `law_revision_id` | Text (used for idempotent re-runs) |
+   | `amendment_enforcement_date` | Date |
+   | `tags` | Multi-select |
+   | `source` | URL |
+
+3. Open the database, click `…` → **Add connections** → select your integration. Without this step the API returns `object_not_found`.
+4. Copy the database ID from the URL: `https://www.notion.so/<workspace>/<32-char-id>?v=...` — the 32 hex chars (with or without hyphens) are the ID.
+
+**Run it:**
+
+```bash
+NOTION_TOKEN=ntn_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
+NOTION_DB_ID=abcdef0123456789abcdef0123456789 \
+  ~/.local/src/laws-jp/examples/sync-to-notion.sh
+```
+
+The script:
+
+- Looks up each statute's existing page by `law_id` and **skips it** if `law_revision_id` already matches → safe to run on a cron.
+- Creates a new page if one doesn't exist yet.
+- Updates properties + replaces page body blocks when a revision changes.
+
+**Daily cron with Notion sync:**
+
+```cron
+0 6 * * *  laws-jp check-all && NOTION_TOKEN=ntn_xxx NOTION_DB_ID=abcd... ~/.local/src/laws-jp/examples/sync-to-notion.sh
+```
+
+**Notes:**
+
+- The Notion API caps blocks per request at 100 and 2,000 chars per text node. The script splits on blank lines and truncates to 1,990 chars per paragraph; very dense statutes are split into multiple blocks automatically.
+- For per-article pages instead of per-statute pages, replace `laws-jp fetch` with `laws-jp article <id> <article>` inside the script — same property layout works.
+
+### Other tools (no example script bundled, just hints)
+
+- **Confluence** — pipe `laws-jp fetch` into [`md-to-confluence`](https://github.com/justmiles/go-markdown2confluence) or POST to the REST API at `/wiki/api/v2/pages`.
+- **Slack canvas / GitHub wiki / GitLab wiki** — same idea: `laws-jp fetch <name>` produces standard CommonMark Markdown.
+- **Vector / RAG databases** (pgvector, pinecone, weaviate, etc.) — chunk by `extractArticles()` from the library API; each `ArticleEntry.body_md` is a natural retrieval unit, and `article_num_text` + `path` give you a perfect citation breadcrumb.
+
+---
+
 ## Library usage
 
 Every CLI subcommand is also exposed as a Node library:
@@ -858,6 +968,91 @@ laws-jp check-all                  # 改正があれば alerts/ に JSON 出力
 | `~/.local/share/laws-jp/` | watchlist / manifest / alerts | `LAWS_JP_HOME` |
 | `~/.cache/laws-jp/body/` | 法令本文 Markdown キャッシュ | `LAWS_JP_CACHE_DIR` |
 | `~/.cache/laws-jp/toc/` | 条文 TOC 索引キャッシュ | `LAWS_JP_TOC_DIR` |
+
+## Obsidian / Notion 連携
+
+### Obsidian
+
+`laws-jp fetch` は Markdown を stdout に出力するだけなので、Obsidian Vault との連携はリダイレクトで完結します。`watch-list` に登録した全法令を 1 ファイルずつ Vault に同期するスクリプト [`examples/sync-to-obsidian.sh`](examples/sync-to-obsidian.sh) を同梱しています。YAML frontmatter で `law_id` / `law_revision_id` / `tags` を吐くので Tag pane や Dataview から横串検索できます。
+
+**コピペ実行：**
+
+```bash
+VAULT="$HOME/Documents/MyVault" FOLDER="laws" \
+  ~/.local/src/laws-jp/examples/sync-to-obsidian.sh
+```
+
+スクリプトは **冪等** — 既に最新 `law_revision_id` のファイルはスキップするので、cron で毎朝回しても OK：
+
+```cron
+0 6 * * *  laws-jp check-all && VAULT=$HOME/Documents/MyVault FOLDER=laws ~/.local/src/laws-jp/examples/sync-to-obsidian.sh
+```
+
+**ノート執筆中に条文を即挿入：**
+
+```bash
+laws-jp article 民法 415 | pbcopy        # macOS
+laws-jp article 民法 415 | xclip -sel c  # Linux
+```
+
+**Dataview クエリ例**（2026 年に改正された法令一覧）：
+
+```dataview
+TABLE law_num, amendment_enforcement_date AS "最終改正"
+FROM "laws"
+WHERE date(amendment_enforcement_date) >= date("2026-01-01")
+SORT amendment_enforcement_date DESC
+```
+
+### Notion
+
+Notion は API が JSON ベースなので、[`examples/sync-to-notion.sh`](examples/sync-to-notion.sh) で **データベースの 1 ページ = 1 法令** として作成・更新します。本文はパラグラフブロックに変換して投入します。
+
+**初回セットアップ：**
+
+1. https://www.notion.so/profile/integrations で internal integration を作成し、シークレット（`ntn_` または `secret_` で始まる）をコピー
+2. Notion 上にデータベースを作成し、以下のプロパティを用意（名前は固定、型は表のとおり）：
+
+   | プロパティ | 型 |
+   |----------|---|
+   | `Title` | タイトル |
+   | `law_id` | テキスト |
+   | `law_num` | テキスト |
+   | `law_revision_id` | テキスト（冪等再実行に使う） |
+   | `amendment_enforcement_date` | 日付 |
+   | `tags` | マルチセレクト |
+   | `source` | URL |
+
+3. データベース画面で `…` → **接続を追加** から作成した integration を選択（これを忘れると API が `object_not_found` を返します）
+4. データベースの URL から ID を取得：`https://www.notion.so/<workspace>/<32-char-id>?v=...` の 32 桁部分
+
+**実行：**
+
+```bash
+NOTION_TOKEN=ntn_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
+NOTION_DB_ID=abcdef0123456789abcdef0123456789 \
+  ~/.local/src/laws-jp/examples/sync-to-notion.sh
+```
+
+挙動：
+
+- 既存ページの `law_revision_id` が一致したらスキップ（cron 用に冪等）
+- 該当ページが無ければ新規作成
+- リビジョンが変わっていたらプロパティ更新 + ブロック差し替え
+
+**毎朝 cron で Notion 同期：**
+
+```cron
+0 6 * * *  laws-jp check-all && NOTION_TOKEN=ntn_xxx NOTION_DB_ID=abcd... ~/.local/src/laws-jp/examples/sync-to-notion.sh
+```
+
+**条文単位でページを作りたい場合**は、スクリプト内の `laws-jp fetch` を `laws-jp article <id> <条番号>` に置き換えれば、同じプロパティ構造でそのまま動きます。
+
+### その他のツール（同梱スクリプトなし）
+
+- **Confluence** — `laws-jp fetch` の出力を [md-to-confluence](https://github.com/justmiles/go-markdown2confluence) 等に渡すか、`/wiki/api/v2/pages` に直接 POST
+- **Slack canvas / GitHub wiki / GitLab wiki** — どれも標準 Markdown を受け付けるので `laws-jp fetch` の結果をそのまま流し込めます
+- **ベクタ DB（pgvector / pinecone / weaviate）** — ライブラリの `extractArticles()` で条文単位に分割。各 `ArticleEntry.body_md` が自然な検索単位になり、`article_num_text` + `path` がそのまま引用パンくずになります
 
 ## 毎朝 6 時の cron をコピペで登録
 
