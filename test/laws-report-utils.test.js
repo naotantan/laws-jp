@@ -90,6 +90,24 @@ describe('linkifyCitations', () => {
     assert.ok(!result.includes('[[1]]'));
     assert.ok(result.includes('[1]'));
   });
+
+  test('8: mermaidブロック内の[N]はリンク変換しない', () => {
+    const body = '本文[1]参照。\n```mermaid\nA[2] --> B[3]\n```\n末尾[1]。';
+    const refs = [
+      { n: 1, title: 'A', url: 'https://example.com/1', content: 'a' },
+      { n: 2, title: 'B', url: 'https://example.com/2', content: 'b' },
+      { n: 3, title: 'C', url: 'https://example.com/3', content: 'c' },
+    ];
+    const result = linkifyCitations(body, refs);
+    // 本文の [1] はリンク化される
+    assert.ok(result.includes('[[1]](https://example.com/1)'));
+    // mermaid 内の A[2] と B[3] はそのまま保持される
+    assert.ok(result.includes('A[2]'));
+    assert.ok(result.includes('B[3]'));
+    // mermaid 内の [2][3] がリンク化されていないこと
+    assert.ok(!result.includes('[[2]]'));
+    assert.ok(!result.includes('[[3]]'));
+  });
 });
 
 // ─── sanitizeMermaid ───────────────────────────────────────────────────────
@@ -182,9 +200,18 @@ describe('kanjiToInt', () => {
 // ─── parseArticleNumber ────────────────────────────────────────────────────
 
 describe('parseArticleNumber', () => {
-  test('20 Fix5: 「第五条の二」→ { num: 5, sub: 2 } を返す', () => {
+  test('20 Fix5: 「第五条の二」→ { num: 5, sub: 2, subSub: 0 } を返す', () => {
     const result = parseArticleNumber('第五条の二');
-    assert.deepEqual(result, { num: 5, sub: 2 });
+    assert.deepEqual(result, { num: 5, sub: 2, subSub: 0 });
+  });
+
+  test('21: 「第五条の二の三」→ { num: 5, sub: 2, subSub: 3 } を返す（三段枝番）', () => {
+    const result = parseArticleNumber('第五条の二の三');
+    assert.deepEqual(result, { num: 5, sub: 2, subSub: 3 });
+  });
+
+  test('22: null テキストは null を返す', () => {
+    assert.equal(parseArticleNumber(null), null);
   });
 });
 

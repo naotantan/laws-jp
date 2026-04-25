@@ -163,7 +163,11 @@ async function cmdArticle(name, articleQuery) {
 
 async function cmdSearch(keyword, opts = {}) {
   if (!keyword) throw new Error('USAGE: laws-jp search <keyword> [--limit=N] [--type=Act|CabinetOrder|MinisterialOrdinance]');
-  const limit = parseInt(opts.limit || '15', 10);
+  const limit = opts.limit === undefined ? 15 : parseInt(opts.limit, 10);
+  if (isNaN(limit) || limit <= 0) {
+    process.stderr.write('error: --limit requires a positive integer\n');
+    process.exit(1);
+  }
   const lawType = opts.type;
   const raw = await api.searchByTitle(keyword, { limit: limit + 1, law_type: lawType });
   const truncated = raw.length > limit;
