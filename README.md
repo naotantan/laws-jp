@@ -616,27 +616,35 @@ Typical use: load two `<state-dir>/alerts/*.json` snapshots, fetch the correspon
 ## FAQ
 
 **Q. Why not just curl the e-Gov API directly?**
+
 A. You can. `laws-jp` is a thin wrapper that handles three pain points: (1) the API returns nested XML-like JSON that's painful to parse by hand, (2) Japanese statutes use kanji numerals that need conversion to Arabic for lookup, and (3) cache invalidation tied to `law_revision_id` is fiddly to get right. If you're hitting the API once or twice, curl is fine. If you're building anything ongoing, use this.
 
 **Q. Is the data current?**
+
 A. Yes. The e-Gov 法令 API is the official government source — it reflects amendments the day they are enacted. `laws-jp` invalidates its cache automatically when `law_revision_id` changes.
 
 **Q. Does it work for English-translated Japanese law?**
+
 A. No. The e-Gov API serves Japanese-only statute text. The English-translated database is a separate JLT system not yet covered here.
 
 **Q. Can I use this commercially?**
+
 A. Yes — both this tool (MIT) and the e-Gov API itself (the Ministry of Internal Affairs and Communications permits commercial use without fee, as of 2026-04). Set `LAWS_JP_USER_AGENT` to your application name as a courtesy.
 
 **Q. Why these 44 seed statutes?**
+
 A. They are the statutes most commonly cited in the daily work of the 6 Japanese licensed professions (弁護士・公認会計士・税理士・社労士・司法書士・行政書士). Pull `lib/seed.js` to see the exact list, or override entirely with your own `watch-add` calls.
 
 **Q. How does it compare to legal databases like LEX/DB or Westlaw Japan?**
+
 A. Different scope. Those are paid commercial DBs with case law, commentary, and editorial coverage. `laws-jp` only covers **statutory text** (the law itself, no commentary). Free, no subscription, official government data.
 
 **Q. How big is the cache?**
+
 A. Roughly 0.5–2 MB per statute (body + TOC). 44 statutes = ~30 MB. Negligible.
 
 **Q. Does it work offline after caching?**
+
 A. Read operations (`fetch`, `article`, `meta` for cached statutes) work offline once cached. `search` and `check-all` always need network.
 
 ---
@@ -644,18 +652,23 @@ A. Read operations (`fetch`, `article`, `meta` for cached statutes) work offline
 ## Troubleshooting
 
 **`NOT_FOUND: "<title>" matched no statute`**
+
 The exact title isn't in the e-Gov database. Try `laws-jp search <keyword>` to find the actual title (e.g. the formal name of "個人情報保護法" is "個人情報の保護に関する法律").
 
 **`INPUT_NO_ARTICLE: <num> not found in <statute>`**
+
 The article number doesn't exist (or has been deleted/renumbered). Use `laws-jp article <statute> <small-num>` (e.g. `1`) to confirm the article numbering style, then look up neighboring numbers.
 
 **`e-Gov API 403 Forbidden`**
+
 The e-Gov API blocked the request — usually a transient rate-limit issue. Wait a few seconds and retry.
 
 **Slow first run**
+
 First fetch hits the API (1–3 seconds for a large statute like 民法). Subsequent fetches are instant from cache. `seed` makes 44 API calls with 80 ms spacing → ~10 seconds.
 
 **Cache or watchlist seems out of date**
+
 Run `laws-jp cache clear` to drop all body/TOC caches, then `laws-jp check-all` to refresh the manifest baseline.
 
 **More issues?** Open one at https://github.com/naotantan/laws-jp/issues with the failing command and the stderr output.
@@ -861,29 +874,37 @@ Slack 通知を追加したい場合は [`examples/daily-cron.sh`](examples/dail
 ## よくある質問
 
 **Q. e-Gov API を直接 curl すれば良くない？**
+
 A. それでも OK ですが、(1) JSON が入れ子の XML ライクで読みにくい、(2) 条文番号が漢数字なので変換が必要、(3) `law_revision_id` ベースのキャッシュ無効化が地味に面倒、の 3 点を吸収します。一回限りの取得なら curl で十分。継続運用ならこちらをどうぞ。
 
 **Q. データは最新？**
+
 A. はい。e-Gov 法令 API は政府公式の正本ソースで、改正は施行当日に反映されます。`laws-jp` は `law_revision_id` の変化を検知して自動的にキャッシュを無効化します。
 
 **Q. 商用利用できる？**
+
 A. はい。本ツールは MIT、e-Gov API も総務省が商用利用可・無料を認めています（2026-04 時点）。`LAWS_JP_USER_AGENT` に自社アプリ名を入れていただけると大変ありがたいです。
 
 **Q. なぜこの 44 法令を seed に？**
+
 A. 6 士業（弁護士・公認会計士・税理士・社労士・司法書士・行政書士）の日常業務で頻繁に参照される法令を選定しています。実際のリストは [`lib/seed.js`](lib/seed.js) を参照、もしくは `watch-add` で完全に好きなセットに置き換えられます。
 
 **Q. 有料 DB（LEX/DB・Westlaw Japan 等）との違いは？**
+
 A. スコープが違います。有料 DB は判例・解説・編集記事も含む商用サービス。`laws-jp` は **法令本文だけ** をカバー。無料・購読不要・政府公式データ。
 
 ## トラブルシューティング
 
 **`NOT_FOUND: "<title>" matched no statute`**
+
 正式名称が e-Gov DB と一致していません。`laws-jp search <キーワード>` で正式タイトルを検索してください（例：「個人情報保護法」の正式名は「個人情報の保護に関する法律」）。
 
 **`e-Gov API 403 Forbidden`**
+
 e-Gov API が一時的にレート制限したケース。数秒待ってリトライしてください。
 
 **初回が遅い**
+
 初回 fetch は API へアクセスするため大きい法令（民法など）で 1〜3 秒。2 回目以降はキャッシュから即返ります。`seed` は 44 件 API 呼び出しで合計約 10 秒。
 
 **何かおかしい**
