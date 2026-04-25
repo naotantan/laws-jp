@@ -366,15 +366,250 @@ console.log(markdown);
 
 A complete library example is at [`examples/library-usage.js`](examples/library-usage.js).
 
-The full API surface is in [`lib/egov-api.js`](lib/egov-api.js):
-- `searchByTitle(title, opts)` — title-substring search
-- `searchByLawId(lawId)` — direct lookup by ID
-- `fetchFullText(lawId)` — full statute tree
-- `flattenMeta(entry)` — flatten search-result metadata
-- `detectChange(prev, curr)` — compare two metadata snapshots
-- `toMarkdown(lawFullText, meta)` — render as Markdown
-- `extractArticles(lawFullText)` — flatten to per-article entries
-- `parseArticleNum(s)` / `articleNumToInt(s)` — parse kanji article numbers
+---
+
+## API reference
+
+The library is composed of four modules. All functions are CommonJS exports — `require('laws-jp/lib/<module>')`.
+
+### `lib/egov-api` — e-Gov API client + Markdown renderer
+
+#### `searchByTitle(title, opts) → Promise<SearchEntry[]>`
+
+Title-substring search via the e-Gov API.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `title` | `string` | Substring to match against statute titles. |
+| `opts.limit` | `number` (default 10) | Max results. The API caps at ~50. |
+| `opts.law_type` | `'Act' \| 'CabinetOrder' \| 'MinisterialOrdinance' \| 'Rule'` | Filter by statute kind. Omit to search all. |
+
+Returns an array of full search-result entries (`{ law_info, revision_info, ... }`). Use `flattenMeta(entry)` to flatten.
+
+```javascript
+const results = await api.searchByTitle('民法', { limit: 1, law_type: 'Act' });
+// → [{ law_info: { law_id: '129AC0000000089', ... }, revision_info: {...} }]
+```
+
+#### `searchByLawId(lawId) → Promise<SearchEntry | null>`
+
+Direct lookup by `law_id`. Returns the entry or `null` if not found. Useful for amendment checks (faster than re-searching by title).
+
+```javascript
+const entry = await api.searchByLawId('129AC0000000089');
+const meta = api.flattenMeta(entry);
+console.log(meta.amendment_enforcement_date);  // '2026-04-01'
+```
+
+#### `fetchFullText(lawId) → Promise<LawData>`
+
+Fetch the full structured XML-like tree of a statute.
+
+```javascript
+const data = await api.fetchFullText('129AC0000000089');
+// → { law_full_text: { tag: 'Law', children: [...] }, ... }
+```
+
+The result has a `law_full_text` property (the recursive tree). Pass it to `toMarkdown()` to render, or to `extractArticles()` for a flat list.
+
+#### `flattenMeta(entry) → Meta`
+
+Flatten a search-result entry into a stable metadata shape (the same shape `meta <name>` prints).
+
+```typescript
+type Meta = {
+  law_id: string;                     // e.g. '129AC0000000089'
+  law_num: string;                    // e.g. '明治二十九年法律第八十九号'
+  law_title: string;                  // e.g. '民法'
+  law_title_kana: string;             // e.g. 'みんぽう'
+  promulgation_date: string;          // 'YYYY-MM-DD'
+  law_revision_id: string;            // unique per amendment
+  abbrev: string | null;              // e.g. '個人情報保護法'
+  category: string;                   // e.g. '民事'
+  updated: string;                    // ISO8601 last-fetch timestamp
+  amendment_promulgate_date: string;  // 'YYYY-MM-DD'
+  amendment_enforcement_date: string; // 'YYYY-MM-DD'
+  amendment_law_id: string;           // law_id of the amending act
+  amendment_law_title: string;
+  amendment_law_num: string;
+  amendment_type: string;             // e-Gov internal code
+  repeal_status: 'None' | string;     // 'None' for active statutes
+  current_revision_status: string;    // e.g. 'CurrentEnforced'
+};
+```
+
+#### `detectChange(prev, curr) → ChangeResult`
+
+Compare two `Meta` snapshots and report whether a real change occurred.
+
+```typescript
+type ChangeResult = {
+  changed: boolean;
+  reason: 'new' | 'amendment' | 'unchanged';
+  fields: { [key: string]: { prev: any; curr: any } };
+};
+```
+
+```javascript
+const change = api.detectChange(prevMeta, currMeta);
+if (change.changed && change.reason === 'amendment') {
+  console.log('Fields that changed:', Object.keys(change.fields));
+}
+```
+
+Watched fields: `updated`, `law_revision_id`, `amendment_enforcement_date`, `amendment_law_id`, `repeal_status`. Pass `null` as `prev` for the first-ever check (returns `{ reason: 'new' }`).
+
+#### `toMarkdown(lawFullText, meta) → string`
+
+Render the statute tree as Markdown. The tree is what `fetchFullText` returns under `data.law_full_text`. The `meta` argument is optional but recommended (it controls the H1 title and the metadata block at the top).
+
+```javascript
+const data = await api.fetchFullText(meta.law_id);
+const md = api.toMarkdown(data.law_full_text, meta);
+// → '# 民法\n\n> 明治二十九年法律第八十九号\n\n## 第一編　総則\n...'
+```
+
+The renderer maps e-Gov tags to Markdown:
+- `Part` / `Chapter` / `Section` / `Subsection` → `##`–`#####`
+- `Article` → bold heading + body
+- `Paragraph`, `Item`, `Subitem*` → indented bullets
+
+#### `extractArticles(lawFullText) → ArticleEntry[]`
+
+Flatten the tree to a per-article list — handy for indexing or bulk per-article processing.
+
+```typescript
+type ArticleEntry = {
+  id: string;                  // synthetic stable ID
+  article_num_text: string;    // e.g. '第百六十六条'
+  article_num_int: number;     // 166
+  article_sub: number;         // 0 for plain article, 2 for 第166条の二, etc.
+  article_sub_sub: number;     // 0 normally, used for 第3条の二の三
+  caption: string | null;      // e.g. '債権等の消滅時効'
+  path: string[];              // breadcrumb e.g. ['第一編　総則', '第七章　時効', ...]
+  body_md: string;             // Markdown of the full article body (incl. heading)
+  byte_size: number;           // body_md byte length
+};
+```
+
+#### `parseArticleNum(text) → { num, sub, subSub } | null`
+
+Parse a kanji article-number string.
+
+```javascript
+api.parseArticleNum('第百六十六条');         // → { num: 166, sub: 0,  subSub: 0 }
+api.parseArticleNum('第百六十六条の二');     // → { num: 166, sub: 2,  subSub: 0 }
+api.parseArticleNum('第三条の二の三');       // → { num: 3,   sub: 2,  subSub: 3 }
+api.parseArticleNum('166');                 // → null (not kanji form)
+```
+
+#### `articleNumToInt(text) → number | null`
+
+Shorthand for `parseArticleNum(text)?.num`.
+
+#### `BASE`
+
+The string `'https://laws.e-gov.go.jp/api/2'`. Exported for tests / mocking.
+
+---
+
+### `lib/cache` — revision-aware body cache
+
+#### `getCached(lawId, expectedRevisionId) → { hit: boolean, md?: string }`
+
+Read the cached Markdown body for `lawId`. If the cached body's `law_revision_id` matches `expectedRevisionId`, returns `{ hit: true, md }`. Otherwise `{ hit: false }`.
+
+```javascript
+const cached = cache.getCached(meta.law_id, meta.law_revision_id);
+if (cached.hit) return cached.md;
+// else fetch & repopulate
+```
+
+#### `setCached(lawId, revisionId, md) → void`
+
+Write `md` to the cache atomically (temp-file-rename). Adds a 3-line frontmatter recording `cached_at`, `law_revision_id`, `byte_size`.
+
+#### `invalidate(lawId) → void`
+
+Remove the cached body for `lawId`. Idempotent — silent on `ENOENT`. Throws `unsafe law_id` if `lawId` fails the `/^[A-Za-z0-9_-]+$/` check (path-traversal defense).
+
+#### `list() → { law_id, byte_size }[]`
+
+List all cached bodies with their sizes (for `cache info`).
+
+#### `size() → { count, total_bytes }`
+
+Aggregate `list()`. Used by `cache info`.
+
+#### `CACHE_DIR`
+
+The resolved cache directory (env-overridable via `LAWS_JP_CACHE_DIR`). Useful for tests.
+
+---
+
+### `lib/toc` — article-level TOC index
+
+#### `buildToc(lawData, meta) → Toc`
+
+Build a TOC from a `fetchFullText` result. The TOC contains every article flattened with breadcrumb paths and is what `getArticle` searches against.
+
+```javascript
+const data = await api.fetchFullText(meta.law_id);
+const t = toc.buildToc(data, meta);
+toc.saveToc(meta.law_id, t);
+```
+
+#### `saveToc(lawId, toc) → void`
+
+Persist atomically.
+
+#### `loadToc(lawId) → Toc | null`
+
+Read; returns `null` on missing. Auto-quarantines corrupt JSON to `<lawId>.json.broken-<timestamp>` and throws `TOC_BROKEN`.
+
+#### `getArticle(lawId, articleQuery) → { article, path } | null`
+
+Look up one article by Arabic, kanji, or sub-article notation. Returns the `ArticleEntry` (same shape as `extractArticles`) plus its breadcrumb `path`. See "Subcommand reference → `article`" for accepted notations.
+
+```javascript
+const found = toc.getArticle('129AC0000000089', '166-2');
+// → { article: { article_num_text: '第百六十六条の二', body_md: '...', ... }, path: [...] }
+```
+
+#### `invalidate(lawId) / list() / TOC_DIR`
+
+Same shape as the corresponding `cache` exports.
+
+---
+
+### `lib/seed` — built-in 44-statute seed
+
+A frozen array used by the CLI's `seed` command:
+
+```javascript
+const SEED = require('laws-jp/lib/seed');
+// → [{ title: '民法', tags: ['民事', '弁護士', '司法書士'] }, ...]
+```
+
+Each entry has `title: string` and `tags: string[]`. Use it as a starter list, then customize with `watch-add` / `watch-remove`.
+
+---
+
+### `lib/article-diff` — article-level diff helpers (advanced)
+
+Exposed for users who want to build per-article diffing on top of the metadata-level amendment detection. Not used by the CLI yet.
+
+| Function | Purpose |
+|----------|---------|
+| `tokenize(text) → string[]` | Tokenize Japanese text by char + ASCII word for diff alignment |
+| `diffTokens(a, b) → DiffOp[]` | Myers-style diff returning `{ op: 'eq' \| 'ins' \| 'del', text }` ops |
+| `renderDiff(ops, format) → string` | Render diff ops as `'unified'` (red/green) or `'side-by-side'` |
+| `safeCachePath(p, label) → string` | Validate a cache file path (rejects null-byte / non-file / traversal) |
+| `loadCacheJson(p, label) → object` | `safeCachePath` + parse JSON, with a labeled error if the file is bad |
+
+Typical use: load two `<state-dir>/alerts/*.json` snapshots, fetch the corresponding `body/<law_id>.md` files, tokenize both, diff, render.
+
+---
 
 ---
 
