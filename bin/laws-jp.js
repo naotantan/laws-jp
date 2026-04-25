@@ -24,6 +24,23 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+
+// Pollution guard: in NODE_ENV=test, all storage env vars must be set
+// explicitly. Run this BEFORE requiring any lib module so the lib-level guards
+// don't fire first and obscure the laws-jp-specific message.
+if (process.env.NODE_ENV === 'test') {
+  const required = ['LAWS_JP_HOME', 'LAWS_JP_CACHE_DIR', 'LAWS_JP_TOC_DIR'];
+  const missing = required.filter((k) => !process.env[k]);
+  if (missing.length > 0) {
+    process.stderr.write(
+      `laws-jp: refusing to run in test mode without explicit overrides for ${missing.join(', ')}. ` +
+      'Set these env vars to isolated paths to avoid polluting the production state. ' +
+      'See test/_env.js for the recommended setup.\n'
+    );
+    process.exit(2);
+  }
+}
+
 const api = require('../lib/egov-api');
 const cache = require('../lib/cache');
 const toc = require('../lib/toc');
@@ -36,6 +53,7 @@ process.stdout.on('error', (err) => {
 });
 
 const HOME = os.homedir();
+
 const STATE_DIR = process.env.LAWS_JP_HOME || path.join(HOME, '.local/share/laws-jp');
 const WATCHLIST = path.join(STATE_DIR, 'watchlist.json');
 const MANIFEST = path.join(STATE_DIR, 'manifest.json');

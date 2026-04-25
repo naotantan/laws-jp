@@ -248,11 +248,27 @@ Local development:
 ```bash
 git clone https://github.com/naotantan/laws-jp.git
 cd laws-jp
-node --test test/         # if tests present
+node --test 'test/**/*.test.js'   # offline tests, ~1s
 node bin/laws-jp.js --help
 ```
 
 The codebase has zero runtime dependencies and aims to stay that way. For development tooling (linters, test runners) we use what ships with Node 18+.
+
+### Test isolation: how laws-jp prevents cache pollution
+
+`laws-jp` writes to two real locations on disk (`~/.local/share/laws-jp/` for state and `~/.cache/laws-jp/` for caches). To guarantee that **a forgotten env var in a test can never overwrite a real user's watchlist or amendment-detection baseline**, the code uses three layers of defense:
+
+1. **Library-level fail-fast.** When `NODE_ENV === 'test'` and the corresponding env override is missing (`LAWS_JP_CACHE_DIR` / `LAWS_JP_TOC_DIR`), `lib/cache.js` and `lib/toc.js` throw at `require` time. The CLI entrypoint `bin/laws-jp.js` does the same for `LAWS_JP_HOME`.
+
+2. **`test/_env.js` isolation helper.** Every test file should `require('./_env')` first. The helper:
+   - Refuses to run if any `LAWS_JP_*` env already points at a production path (`~/.cache/laws-jp/...` or `~/.local/share/laws-jp/...`).
+   - Sets `NODE_ENV=test` so the lib-level guards engage.
+   - Creates a unique `mkdtempSync` directory under the system tmpdir and points all `LAWS_JP_*` env vars at subdirectories of it.
+   - Cleans up automatically on process exit (set `LAWS_JP_TEST_KEEP=1` to retain for debugging).
+
+3. **Regression test.** `test/cache-pollution-guard.test.js` exercises every guard path so that future contributors can't silently weaken the protections.
+
+Production runs (no `NODE_ENV=test`) remain backward-compatible: the CLI continues to use the default paths. The protection only engages in test mode.
 
 ---
 
