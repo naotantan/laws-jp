@@ -14,6 +14,10 @@
 //   seed                          Seed watchlist from built-in 44-statute list
 //   cache info                    Show cache size / count
 //   cache clear [<law_id>]        Clear cache (all if no law_id)
+//   expand-law-names              --laws='["名称"]' → JSON with 施行令/施行規則 added
+//   report-build-refs             --laws='...' --query='...' [--mode=full|toc-first] [--article-ids='...'] → refs JSON
+//   report-build-prompt           --query='...' --refs-json=<path> → system prompt JSON
+//   report-finalize               --report-text='...' --refs-json=<path> → post-processed report
 //
 // Environment variables:
 //   LAWS_JP_HOME            State dir (watchlist, manifest, alerts) — default: ~/.local/share/laws-jp
@@ -45,6 +49,9 @@ const api = require('../lib/egov-api');
 const cache = require('../lib/cache');
 const toc = require('../lib/toc');
 const SEED = require('../lib/seed');
+const reportUtils = require('../lib/laws-report-utils');
+const reportBuildRefs = require('../lib/laws-report-build-refs');
+const reportPrompt = require('../lib/laws-report-prompt');
 
 // Handle EPIPE silently — happens when stdout is closed early (e.g. `... | head`).
 process.stdout.on('error', (err) => {
@@ -367,6 +374,71 @@ function cmdCacheClear(target) {
   }
 }
 
+// ---------- report subcommands ----------
+
+async function cmdExpandLawNames(args) {
+  const raw = args.laws;
+  if (!raw) { process.stderr.write('Usage: expand-law-names --laws=\'["法令名"]\'\n'); process.exit(1); }
+  let names;
+  try { names = JSON.parse(raw); } catch { process.stderr.write('--laws must be valid JSON array\n'); process.exit(4); }
+  process.stdout.write(JSON.stringify(reportUtils.expandLawNames(names)) + '\n');
+}
+
+async function cmdReportBuildRefs(args) {
+  const raw = args.laws;
+  const query = args.query || '';
+  if (!raw) { process.stderr.write('Usage: report-build-refs --laws=\'["法令名"]\' --query=\'...\'\n'); process.exit(1); }
+  let lawNames;
+  try { lawNames = JSON.parse(raw); } catch { process.stderr.write('--laws must be valid JSON array\n'); process.exit(4); }
+  const mode = args.mode || 'full';
+  const articleIds = args['article-ids'] ? JSON.parse(args['article-ids']) : [];
+  const substitutions = args.substitutions ? JSON.parse(args.substitutions) : [];
+  const estimatedNames = args['estimated-names'] ? JSON.parse(args['estimated-names']) : lawNames;
+  let urlContext = null;
+  if (args['url-context']) {
+    try { urlContext = JSON.parse(args['url-context']); } catch { /* ignore */ }
+  }
+  const result = await reportBuildRefs.buildRefs({ lawNames, query, mode, articleIds, substitutions, estimatedNames, urlContext });
+  process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+}
+
+async function cmdReportBuildPrompt(args) {
+  const query = args.query || '';
+  const refsJsonPath = args['refs-json'];
+  if (!refsJsonPath) { process.stderr.write('Usage: report-build-prompt --query=\'...\' --refs-json=<path>\n'); process.exit(1); }
+  let refsData;
+  try { refsData = JSON.parse(fs.readFileSync(refsJsonPath, 'utf8')); }
+  catch (e) { process.stderr.write(`Cannot read refs JSON: ${e.message}\n`); process.exit(4); }
+  const refsForPrompt = refsData.refs_for_prompt || '';
+  const warnings = Object.values(refsData.warnings || {}).join('\n');
+  const patternId = reportPrompt.classifyQuery(query);
+  const patternDef = reportPrompt.QUERY_PATTERNS.find(p => p.id === patternId) || reportPrompt.QUERY_PATTERNS[5];
+  const sections = reportPrompt.PATTERN_SECTIONS[patternId] || [];
+  const systemPrompt = reportPrompt.buildSystemPrompt(query, refsForPrompt, warnings);
+  process.stdout.write(JSON.stringify({ pattern_id: patternId, pattern_label: patternDef.label, sections, system_prompt: systemPrompt }, null, 2) + '\n');
+}
+
+async function cmdReportFinalize(args) {
+  const reportText = args['report-text'];
+  const refsJsonPath = args['refs-json'];
+  if (!reportText || !refsJsonPath) { process.stderr.write('Usage: report-finalize --report-text=\'...\' --refs-json=<path>\n'); process.exit(1); }
+  let refsData;
+  try { refsData = JSON.parse(fs.readFileSync(refsJsonPath, 'utf8')); }
+  catch (e) { process.stderr.write(`Cannot read refs JSON: ${e.message}\n`); process.exit(4); }
+  const refs = refsData.refs || [];
+  const filtered = reportUtils.filterCitations(reportText, refs);
+  let output = reportUtils.linkifyCitations(reportText, refs);
+  const sourcesSection = filtered.map(r =>
+    `- [[${r.n}]](${r.url}) ${r.law_title} ${r.article_num_text}${r.caption ? `　${r.caption}` : ''}`
+  ).join('\n');
+  const fullSources = `## 出典\n\n${sourcesSection || '（引用なし）'}`;
+  output = output.includes('[SOURCES_PLACEHOLDER]')
+    ? output.replace('[SOURCES_PLACEHOLDER]', fullSources)
+    : output + '\n\n' + fullSources;
+  output = reportUtils.sanitizeMermaid(output);
+  process.stdout.write(output + '\n');
+}
+
 // ---------- argv ----------
 function parseArgs(argv) {
   const out = { _: [] };
@@ -399,6 +471,11 @@ Usage:
 
   laws-jp cache info
   laws-jp cache clear [<law_id>]
+
+  laws-jp expand-law-names --laws='["個人情報保護法"]'
+  laws-jp report-build-refs --laws='["民法"]' --query='消滅時効の起算点は'
+  laws-jp report-build-prompt --query='消滅時効の起算点は' --refs-json=<path>
+  laws-jp report-finalize --report-text='...' --refs-json=<path>
   laws-jp --help
 
 Environment variables:
@@ -440,6 +517,10 @@ async function main() {
       case 'cache':        return rest[0] === 'clear'
                                     ? cmdCacheClear(rest[1])
                                     : cmdCacheInfo();
+      case 'expand-law-names':    return await cmdExpandLawNames(args);
+      case 'report-build-refs':   return await cmdReportBuildRefs(args);
+      case 'report-build-prompt': return await cmdReportBuildPrompt(args);
+      case 'report-finalize':     return await cmdReportFinalize(args);
       default:
         process.stderr.write(`Unknown subcommand: ${sub}\n\n${HELP}`);
         process.exit(2);
