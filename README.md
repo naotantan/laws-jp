@@ -43,6 +43,7 @@ The Japanese government publishes the canonical text of every law and ordinance 
 - **Search across all 9,500+ statutes** when you don't know the title
 - **Watchlist + amendment detection** so a daily cron can ping you when any tracked statute is amended
 - **Local caching** keyed on the official `law_revision_id` — once fetched, a statute never hits the API again until it's actually amended
+- **AI report pipeline** — classify a legal query into one of 6 patterns, fetch relevant article references, build a grounded LLM system prompt, and post-process the AI output (citation linking, Mermaid sanitization, source list generation) — all from the CLI
 - **Zero runtime dependencies** — only Node 18+. No native modules. No API keys.
 
 ## Use cases
@@ -303,6 +304,80 @@ laws-jp cache info
 
 laws-jp cache clear 129AC0000000089   # one statute
 laws-jp cache clear                   # everything
+```
+
+---
+
+### Report pipeline subcommands
+
+The four subcommands below implement a composable pipeline for AI-assisted legal report generation. They are intended to be driven by an orchestrator (e.g. a Claude slash command or shell script) that pipes the output of one step into the next.
+
+**Pipeline flow:**
+
+```
+expand-law-names → report-build-refs → [LLM call] → report-finalize
+```
+
+#### `expand-law-names --laws='[...]'`
+
+Given a JSON array of statute names, return an expanded array that includes the 施行令 and 施行規則 variants of each entry. Deduplicates automatically.
+
+```bash
+laws-jp expand-law-names --laws='["個人情報保護法"]'
+# → ["個人情報の保護に関する法律", "個人情報の保護に関する法律施行令",
+#    "個人情報の保護に関する法律施行規則"]
+```
+
+#### `report-build-refs --laws='[...]' --query='...' [options]`
+
+Fetch each statute from the e-Gov API, extract article-level references, select the ones most relevant to the query, and return a refs JSON blob that is used as grounding context for the LLM.
+
+| Flag | Description |
+|------|-------------|
+| `--laws='[...]'` | JSON array of statute names (required) |
+| `--query='...'` | Natural-language legal question (required) |
+| `--mode=full\|toc-first` | `full` fetches entire text; `toc-first` (default) uses the TOC for large statutes |
+| `--article-ids='[...]'` | JSON array of specific article IDs to include regardless of relevance |
+| `--estimated-names='[...]'` | Expected names to validate against the API's `law_title` (divergence detection) |
+
+```bash
+refs_path=$(mktemp /tmp/refs-XXXX.json)
+laws-jp report-build-refs \
+  --laws='["民法"]' \
+  --query='消滅時効の起算点はいつになりますか' \
+  > "$refs_path"
+```
+
+Output is a JSON object with `refs` (array of article reference objects), `refs_for_prompt` (pre-formatted string for the LLM), and `warnings` (any divergence or fetch errors).
+
+#### `report-build-prompt --query='...' --refs-json=<path>`
+
+Classify the query into one of 6 patterns (`definition`, `procedure`, `comparison`, `interpretation`, `policy`, `comprehensive`) and build a complete system prompt incorporating the grounding context from the refs JSON.
+
+```bash
+laws-jp report-build-prompt \
+  --query='消滅時効の起算点はいつになりますか' \
+  --refs-json="$refs_path"
+# → JSON: { pattern_id, pattern_label, sections, system_prompt }
+```
+
+The caller passes `system_prompt` to the LLM and uses `sections` as the expected report structure.
+
+#### `report-finalize --report-text='...' --refs-json=<path>`
+
+Post-process the raw LLM output:
+
+1. **Citation linking** — converts `[1]` / `[1,3]` inline citations to `[[1]](url)` Markdown links (skips Mermaid blocks)
+2. **Source filtering** — keeps only refs actually cited in the body
+3. **Source list generation** — replaces `[SOURCES_PLACEHOLDER]` with a formatted `## 出典` section
+4. **Mermaid sanitization** — normalises round/circle/diamond node shapes to the safe `A[...]` rectangle form
+
+```bash
+report_text=$(claude -p "$(cat prompt.txt)" < /dev/null)  # your LLM call
+laws-jp report-finalize \
+  --report-text="$report_text" \
+  --refs-json="$refs_path"
+# → Finalized Markdown with linked citations and source list
 ```
 
 ---
@@ -705,6 +780,87 @@ Each entry has `title: string` and `tags: string[]`. Use it as a starter list, t
 
 ---
 
+### `lib/laws-report-utils` — citation and rendering utilities
+
+```javascript
+const utils = require('laws-jp/lib/laws-report-utils');
+```
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `expandLawNames` | `(names: string[]) → string[]` | Add 施行令/施行規則 variants; deduplicate |
+| `filterCitations` | `(body, refs) → refs` | Keep only refs whose `[N]` appears in the body (ignores Mermaid blocks) |
+| `linkifyCitations` | `(body, refs) → string` | Replace `[N]` with `[[N]](url)` links (skips Mermaid blocks) |
+| `sanitizeMermaid` | `(text) → string` | Normalise Mermaid node shapes to safe `A[...]` form |
+| `bigramSimilarity` | `(a, b) → number` | Bigram Jaccard similarity (0–1); used for law-title divergence detection |
+| `kanjiToInt` | `(text) → number` | Convert kanji numeral string to integer (`'百六十六'` → `166`) |
+| `parseArticleNumber` | `(text) → {num, sub, subSub} \| null` | Parse a kanji article-number string including three-level subarticles |
+
+---
+
+### `lib/laws-report-prompt` — query classification and system prompt builder
+
+```javascript
+const prompt = require('laws-jp/lib/laws-report-prompt');
+```
+
+#### `classifyQuery(query) → patternId`
+
+Classify a natural-language legal query into one of six pattern IDs:
+
+| Pattern ID | Label | Trigger phrases |
+|------------|-------|-----------------|
+| `definition` | 定義確認型 | 「…の定義」「…とは何か」 |
+| `procedure` | 手続き確認型 | 「…の手続き」「…はどうすればいいか」 |
+| `comparison` | 比較検討型 | 「…と…の違い」「比較して」 |
+| `interpretation` | 解釈適用型 | 「…の場合はどうなるか」「起算点は」 |
+| `policy` | 政策研究型 | 「…の政策」「…の課題」 |
+| `comprehensive` | 包括分析型 | 「包括的に」「全体像」 |
+
+`comprehensive` takes priority over `policy` when both keywords appear.
+
+#### `buildSystemPrompt(query, refsForPrompt, warnings?) → string`
+
+Build the full system prompt for the LLM. Embeds the pattern label, source-priority instructions, Mermaid constraints, citation rules, and the pre-formatted `refsForPrompt` string from `report-build-refs`.
+
+#### `QUERY_PATTERNS` / `PATTERN_SECTIONS`
+
+`QUERY_PATTERNS` is the six-entry array of `{ id, label, hint }` objects. `PATTERN_SECTIONS` maps each pattern ID to its expected Markdown section headers (e.g. `['## 定義', '## 関連条文', '## 留意事項']` for `definition`).
+
+---
+
+### `lib/laws-report-build-refs` — reference context builder
+
+```javascript
+const buildRefs = require('laws-jp/lib/laws-report-build-refs');
+```
+
+#### `buildRefs(opts) → Promise<RefsResult>`
+
+Fetch the specified statutes, extract article-level references, and select the ones most relevant to the query. This is the core of the report pipeline.
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `lawNames` | `string[]` | Statute names to fetch |
+| `query` | `string` | Natural-language legal question |
+| `mode` | `'full' \| 'toc-first'` | Fetch strategy (default `'toc-first'`) |
+| `articleIds` | `string[]` | Specific article IDs to force-include |
+| `estimatedNames` | `string[]` | Expected law titles for divergence detection |
+| `substitutions` | `object[]` | Name substitution map for aliased statutes |
+| `urlContext` | `object \| null` | Pre-fetched URL context to inject |
+
+```javascript
+const result = await buildRefs.buildRefs({
+  lawNames: ['民法'],
+  query: '消滅時効の起算点はいつになりますか',
+});
+// result.refs          → ArticleReference[]
+// result.refs_for_prompt → string (pre-formatted for LLM)
+// result.warnings      → object (divergence / fetch errors)
+```
+
+---
+
 ### `lib/article-diff` — article-level diff helpers (advanced)
 
 Exposed for users who want to build per-article diffing on top of the metadata-level amendment detection. Not used by the CLI yet.
@@ -858,6 +1014,7 @@ API キーも `npm install` も書籍 DB の購読も不要。表示される条
 - 「民法第 166 条」のような **条番号でピンポイント取得**（漢数字 `第百六十六条`、枝番 `166-2`、いずれも OK）
 - **改正検知**：watchlist に登録した法令を毎日チェックし、改正があった日のうちに alert JSON を吐く
 - **キャッシュ**は公式の `law_revision_id` に紐付くので、改正があるまで API を一切叩かない
+- **AI レポートパイプライン**：法的クエリを 6 パターンに分類し、関連条文参照を取得、LLM 向けシステムプロンプトを構築、AI 出力の後処理（引用リンク化・Mermaid サニタイズ・出典セクション生成）まで CLI だけで完結
 - **ランタイム依存ゼロ**：Node.js 18+ だけ。API キー不要。商用利用可（e-Gov 利用規約による）
 
 ## 想定ユースケース
@@ -960,6 +1117,36 @@ laws-jp check-all                  # 改正があれば alerts/ に JSON 出力
 | `watch-list` / `watch-add` / `watch-remove` | 監視対象 CRUD |
 | `check-all [--dry-run]` | 監視対象を改正検知。改正があれば alert JSON 出力 |
 | `cache info` / `cache clear [<law_id>]` | キャッシュ管理 |
+| `expand-law-names --laws='[...]'` | 施行令・施行規則を自動補完した法令名配列を返す |
+| `report-build-refs --laws='[...]' --query='...'` | 条文参照 JSON を構築（LLM グラウンディング用）|
+| `report-build-prompt --query='...' --refs-json=<path>` | 6 パターン分類 + LLM システムプロンプト生成 |
+| `report-finalize --report-text='...' --refs-json=<path>` | 引用リンク化・Mermaid 整形・出典セクション生成 |
+
+### AI レポートパイプラインの使い方
+
+```bash
+# Step 1: 法令名を展開（施行令・施行規則を追加）
+laws-jp expand-law-names --laws='["個人情報保護法"]'
+
+# Step 2: 条文参照 JSON を構築
+refs_path=$(mktemp /tmp/refs-XXXX.json)
+laws-jp report-build-refs \
+  --laws='["個人情報の保護に関する法律"]' \
+  --query='個人情報の第三者提供はいつ認められますか' \
+  > "$refs_path"
+
+# Step 3: システムプロンプトを生成して LLM に渡す（例: Claude CLI）
+prompt_json=$(laws-jp report-build-prompt \
+  --query='個人情報の第三者提供はいつ認められますか' \
+  --refs-json="$refs_path")
+system_prompt=$(echo "$prompt_json" | node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).system_prompt)")
+
+# Step 4: LLM の出力を後処理（引用リンク化・出典セクション生成）
+report_text="<LLM の生成テキスト>"
+laws-jp report-finalize \
+  --report-text="$report_text" \
+  --refs-json="$refs_path"
+```
 
 ## 状態保存先
 
