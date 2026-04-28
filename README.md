@@ -524,6 +524,41 @@ The script:
 - The Notion API caps blocks per request at 100 and 2,000 chars per text node. The script splits on blank lines and truncates to 1,990 chars per paragraph; very dense statutes are split into multiple blocks automatically.
 - For per-article pages instead of per-statute pages, replace `laws-jp fetch` with `laws-jp article <id> <article>` inside the script — same property layout works.
 
+### Claude Code
+
+If you use [Claude Code](https://claude.ai/code), `laws-jp` can be driven directly from a `/laws` slash command that supports natural-language queries, `--strict` byte-perfect citation, and `--report` high-quality report mode — no `laws-jp` subcommands to type by hand.
+
+**External context auto-detection**
+
+Pass URLs or file paths alongside your question and the command fetches their content automatically, then evaluates it against the relevant statutes:
+
+```
+/laws ~/Documents/privacy-policy.md に問題はないか
+/laws https://example.com/terms 特定商取引法上の表記漏れはないか
+/laws /path/to/commercial.html https://example.com/services 法令上の過不足をチェックして
+```
+
+| Source type | Detection pattern | Fetched with |
+|-------------|-------------------|--------------|
+| URL | starts with `http://` or `https://` | WebFetch (parallel) |
+| File path | starts with `/`, `~/`, `./`, or `../` | Read tool (parallel) |
+
+Up to 5 sources per invocation. The compliance review appears in the response under the **外部コンテキストのレビュー** heading, with specific article citations.
+
+**Modes:**
+```
+# Standard — URL/file auto-detection built in, no flag needed
+/laws https://example.com/privacy に個人情報保護法上の問題はないか
+
+# Report — 6-pattern classification + citation numbers + source filtering
+/laws ~/contracts/service-agreement.md の消費者契約法上のリスクは --report
+
+# Strict — byte-perfect article quote, no AI summarisation (for legal documents)
+/laws 民法 166 --strict
+```
+
+See `~/.claude/commands/laws.md` in your Claude Code config directory for full documentation.
+
 ### Other tools (no example script bundled, just hints)
 
 - **Confluence** — pipe `laws-jp fetch` into [`md-to-confluence`](https://github.com/justmiles/go-markdown2confluence) or POST to the REST API at `/wiki/api/v2/pages`.
@@ -1234,6 +1269,42 @@ NOTION_DB_ID=abcdef0123456789abcdef0123456789 \
 ```
 
 **条文単位でページを作りたい場合**は、スクリプト内の `laws-jp fetch` を `laws-jp article <id> <条番号>` に置き換えれば、同じプロパティ構造でそのまま動きます。
+
+### Claude Code 連携
+
+[Claude Code](https://claude.ai/code) を使っている場合、`/laws` スラッシュコマンドから `laws-jp` を直接操作できます。自然言語クエリ・`--strict` 逐語引用モード・`--report` 高品質レポートモードをサポートしています。
+
+**外部コンテキスト自動取得**
+
+質問と一緒に URL やファイルパスを渡すと、内容を自動取得して関連法令と照合します（`--report` フラグ不要）：
+
+```
+/laws ~/Documents/privacy-policy.md に問題はないか
+/laws https://example.com/terms 特定商取引法上の表記漏れはないか
+/laws /path/to/commercial.html https://example.com/services 法令上の過不足をチェックして
+```
+
+| ソース種別 | 判定パターン | 取得方法 |
+|-----------|-------------|---------|
+| URL | `http://` / `https://` で始まる | WebFetch（並列） |
+| ファイルパス | `/`・`~/`・`./`・`../` で始まる | Read ツール（並列） |
+
+1 回の実行で最大 5 件。照合結果は **外部コンテキストのレビュー** セクションに条文番号付きで出力されます。
+
+**モード早見表：**
+
+```
+# 標準モード（URL・ファイル自動取得）
+/laws https://example.com/privacy に個人情報保護法上の問題はないか
+
+# レポートモード（6 パターン分類・引用番号・出典フィルタリング）
+/laws ~/contracts/service-agreement.md の消費者契約法上のリスクは --report
+
+# 厳格引用モード（AI 加工なし、逐語引用）
+/laws 民法 166 --strict
+```
+
+詳細は Claude Code 設定ディレクトリの `~/.claude/commands/laws.md` を参照してください。
 
 ### その他のツール（同梱スクリプトなし）
 
