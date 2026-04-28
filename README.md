@@ -545,15 +545,35 @@ Pass URLs or file paths alongside your question and the command fetches their co
 
 Up to 5 sources per invocation. The compliance review appears in the response under the **外部コンテキストのレビュー** heading, with specific article citations.
 
+**Intent detection — `--report` confirmation prompt**
+
+When your query contains words implying report creation, a one-time confirmation appears before proceeding:
+
+| Trigger pattern | Match condition |
+|----------------|-----------------|
+| 「レポート」 | single word |
+| 「詳細/詳しく」 + 「作成/整理/まとめ/出して」 | both present in same query |
+| 「作成して/作成しろ/作って/作れ」 | single word |
+| 「分析して/分析しろ」 | single word |
+
+```
+> ℹ️ クエリに「レポート作成の意図」が検出されました。
+> - [N] 標準モード: 即時回答（軽量）
+> - [y] --report モード: 6パターン分類 + 引用番号（高品質）
+> --report モードで実行しますか？ [y/N]
+```
+
+Respond `y` / `Y` / `yes` to activate `--report`; anything else runs standard mode. The prompt is skipped when `--report` or `--strict` is already specified.
+
 **Modes:**
 ```
-# Standard — URL/file auto-detection built in, no flag needed
+# Standard — URL/file auto-detection, intent prompt fires if applicable
 /laws https://example.com/privacy に個人情報保護法上の問題はないか
 
-# Report — 6-pattern classification + citation numbers + source filtering
+# Report — explicit flag (skips the confirmation prompt)
 /laws ~/contracts/service-agreement.md の消費者契約法上のリスクは --report
 
-# Strict — byte-perfect article quote, no AI summarisation (for legal documents)
+# Strict — byte-perfect article quote (skips all intent detection)
 /laws 民法 166 --strict
 ```
 
@@ -1291,16 +1311,36 @@ NOTION_DB_ID=abcdef0123456789abcdef0123456789 \
 
 1 回の実行で最大 5 件。照合結果は **外部コンテキストのレビュー** セクションに条文番号付きで出力されます。
 
+**意図検出 — `--report` 確認プロンプト**
+
+クエリにレポート作成の意図を示す語句が含まれる場合、実行前に 1 回だけ確認プロンプトが表示されます：
+
+| トリガーパターン | 判定条件 |
+|----------------|---------|
+| 「レポート」 | 単体 |
+| 「詳細/詳しく」 + 「作成/整理/まとめ/出して」 | 同一クエリ内に両方 |
+| 「作成して/作成しろ/作って/作れ」 | 単体 |
+| 「分析して/分析しろ」 | 単体 |
+
+```
+> ℹ️ クエリに「レポート作成の意図」が検出されました。
+> - [N] 標準モード: 即時回答（軽量）
+> - [y] --report モード: 6パターン分類 + 引用番号（高品質）
+> --report モードで実行しますか？ [y/N]
+```
+
+`y` / `Y` / `yes` で `--report` モードに移行。それ以外はすべて標準モードで実行します。`--report` または `--strict` が明示指定されている場合は確認プロンプトをスキップします。
+
 **モード早見表：**
 
 ```
-# 標準モード（URL・ファイル自動取得）
+# 標準モード（URL・ファイル自動取得、意図検出プロンプトあり）
 /laws https://example.com/privacy に個人情報保護法上の問題はないか
 
-# レポートモード（6 パターン分類・引用番号・出典フィルタリング）
+# レポートモード（明示指定 → 確認プロンプトをスキップ）
 /laws ~/contracts/service-agreement.md の消費者契約法上のリスクは --report
 
-# 厳格引用モード（AI 加工なし、逐語引用）
+# 厳格引用モード（AI 加工なし・意図検出も完全スキップ）
 /laws 民法 166 --strict
 ```
 
